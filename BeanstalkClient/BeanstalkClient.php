@@ -51,8 +51,11 @@ class BeanstalkClient {
     const NOTICE = -1;
     const THROW_EXCEPTION = 0;
     
-    /** @var int action when job is suspended *by server* */
-    private function $onSuspended = 0;
+    /** @var int */
+    private $onSuspended = 0;
+    
+    /** @var callback */
+    private $onDeadline;
     
     
     /**
@@ -256,12 +259,29 @@ class BeanstalkClient {
     
     
     /**
+     * Set callback to call when a "DEADLINE SOON" signal received.
+     * 
+     * @param callback
+     * @return self
+     */
+    public function setOnDeadline($callback) {
+        if (!is_callable($callback))
+            throw new \InvalidArgumentException("Invalid callback onDeadline given.");
+        
+        $this->onDeadline = $callback;
+        return $this;
+    }
+    
+    
+    /**
      * What to do if job is suspended by server.
      * 
      * @param int
+     * @return self
      */
     public function setOnSuspended($action) {
         $this->onSuspended = $action;
+        return $this;
     }
     
     
@@ -278,6 +298,7 @@ class BeanstalkClient {
                 trigger_error("BeanstalkClient: Job $jobId was suspended by server. Check and restore the suspended jobs!");
                 break;
             case self::THROW_EXCEPTION;
+            default:
                 throw new BeanstalkException("BeanstalkClient: Job $jobId was suspended by server. Check and restore the suspended jobs!");
         }
     }
@@ -373,7 +394,7 @@ class BeanstalkClient {
                     'body' => $this->unserialize($this->receive((int)strtok(' ')))
                 );
             case 'DEADLINE_SOON':
-                /// notify?
+                if ($this->onDeadline) $this->onDeadline();
                 return array();
             case 'TIMED_OUT':
                 return array();
