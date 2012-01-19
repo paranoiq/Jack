@@ -1,0 +1,30 @@
+Log: C:\http\dev\Jack\tests\test.log
+F...
+
+Failures:
+
+-> C:\http\dev\Jack\tests\Jack\BeanstalkClient\producer.phpt
+   file: C:\http\dev\Jack\tests\Jack\BeanstalkClient\producer.phpt
+   <pre><code>Jack\BeanstalkClient::__set_state(array(
+   'host' => '127.0.0.1',
+   'port' => 11300,
+   'timeout' => 1,
+   'persistent' => true,
+   'connection' => NULL,
+   'defaultPriority' => 2048,
+   'defaultTimeToRun' => 60,
+   'defaultDelay' => 0,
+   'onSuspended' => 0,
+   'onDeadline' => NULL,
+))<br />
+<b>Fatal error</b>:  Uncaught exception 'Jack\BeanstalkException' with message 'Socket: Pokus o pøipojení selhal, protože pøipojená strana v èasovém intervalu øádnì neodpovìdìla, nebo vytvoøené pøipojení selhalo, protože neodpovìdìl pøipojený hostitel.
+' in C:\http\dev\Jack\BeanstalkClient\BeanstalkClient.php:128
+Stack trace:
+#0 C:\http\dev\Jack\BeanstalkClient\BeanstalkClient.php(160): Jack\BeanstalkClient-&gt;connect()
+#1 C:\http\dev\Jack\BeanstalkClient\BeanstalkClient.php(331): Jack\BeanstalkClient-&gt;send('put 2048 0 60 9')
+#2 C:\http\dev\Jack\tests\Jack\BeanstalkClient\producer.phpt(5): Jack\BeanstalkClient-&gt;queue('something')
+#3 {main}
+  thrown in <b>C:\http\dev\Jack\BeanstalkClient\BeanstalkClient.php</b> on line <b>128</b><br />
+
+
+FAILURES! (4 tests, 1 failures, 0 skipped)

@@ -20,7 +20,7 @@ class BeanstalkClient {
     // job priority
     const TOP_PRIORITY = 0;
     const URGENT_PRIORITY = 512;
-    const HIGH_PRIORITY = 1024; // everything under 1024 is urgent (see "current-jobs-urgent" in protocol)
+    const HIGH_PRIORITY = 1024; // everything under 1024 is urgent (see "current-jobs-urgent" in stats)
     const MEDIUM_PRIORITY = 2048;
     const LOW_PRIORITY = 4096;
     
@@ -41,9 +41,9 @@ class BeanstalkClient {
     private $connection;
     
     
-    protected $defaultPriority;
-    protected $defaultTimeToRun;
-    protected $defaultDelay;
+    protected $defaultPriority = 2048;
+    protected $defaultTimeToRun = 60;
+    protected $defaultDelay = 0;
     
     
     // suspended job handling
@@ -159,7 +159,7 @@ class BeanstalkClient {
         if (!$this->connection) {
             $this->connect();
         }
-        
+        echo ">> $data\n";
         $res = fwrite($this->connection, $data . "\r\n", strlen($data) + 2);
         
         if ($res === FALSE) {
@@ -185,13 +185,17 @@ class BeanstalkClient {
             if ($meta['timed_out']) {
                 throw new BeanstalkException("Connection to Beanstalk server timed out.");
             }
-            return rtrim($data, "\r\n");
+            $data = rtrim($data, "\r\n");
+            echo "   $data\n";
         } else {
             $data = stream_get_line($this->connection, 16384, "\r\n");
             if ($data === FALSE) {
                 throw new BeanstalkException("No reply from Beanstalk server.");
             }
+            echo "   $data\n";
         }
+        
+        return $data;
     }
     
     
@@ -200,7 +204,7 @@ class BeanstalkClient {
      */
     public function quit() {
         try {
-            $this->send('quit');
+            if ($this->connection) $this->send('quit');
         } catch (BeanstalkException $e) {
             // pass
         }
@@ -318,15 +322,15 @@ class BeanstalkClient {
      * @return int job id
      */
     public function queue($data, $priority = NULL, $timeToRun = NULL, $delay = NULL) {
-        if (!isset($priority))    $priority  = $this->defaultPriority;
+        if (!isset($priority)) $priority = $this->defaultPriority;
         if (!isset($timeToRun)) $timeToRun = $this->defaultTimeToRun;
-        if (!isset($delay))        $delay       = $this->defaultDelay;
+        if (!isset($delay)) $delay = $this->defaultDelay;
         
         $priority  = abs((int)$priority);
         $timeToRun = abs((int)$timeToRun);
         if (!is_int($delay)) $delay = $this->delayToSeconds($delay);
         
-        if (!is_string($data)) $data = $this->serialize($data);
+        if (!is_string($data)) $data = $this->serializeJob($data);
         
         $this->send(sprintf('put %d %d %d %d', $priority, $delay, $timeToRun, strlen($data)));
         $this->send($data);
@@ -342,7 +346,7 @@ class BeanstalkClient {
             case 'EXPECTED_CRLF':
             case 'JOB_TOO_BIG':
             default:
-                throw new BeanstalkException("Error when assigning a job: " . $status);
+                throw new BeanstalkException("Error when queueing a job: " . $status);
         }
     }
     
@@ -391,7 +395,7 @@ class BeanstalkClient {
             case 'RESERVED':
                 return array(
                     'id' => (int)strtok(' '),
-                    'body' => $this->unserialize($this->receive((int)strtok(' ')))
+                    'body' => $this->unserializeJob($this->receive((int)strtok(' ')))
                 );
             case 'DEADLINE_SOON':
                 if ($this->onDeadline) $this->onDeadline();
@@ -665,7 +669,7 @@ class BeanstalkClient {
             case 'FOUND':
                 $job = array(
                     'id' => (int)strtok(' '),
-                    'body' => $this->deserialize($this->receive((int)strtok(' ')))
+                    'body' => $this->unserializeJob($this->receive((int)strtok(' ')))
                 );
             case 'NOT_FOUND':
                 return NULL;
