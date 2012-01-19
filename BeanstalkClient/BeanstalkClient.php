@@ -1,6 +1,6 @@
 <?php
 
-namespace Dogma;
+namespace Jack;
 
 
 class BeanstalkException extends \RuntimeException {};
@@ -17,6 +17,7 @@ class BeanstalkException extends \RuntimeException {};
  */
 class BeanstalkClient {
     
+    // job priority
     const TOP_PRIORITY = 0;
     const URGENT_PRIORITY = 512;
     const HIGH_PRIORITY = 1024; // everything under 1024 is urgent (see "current-jobs-urgent" in protocol)
@@ -45,6 +46,14 @@ class BeanstalkClient {
     protected $defaultDelay;
     
     
+    // suspended job handling
+    const IGNORE = -2;
+    const NOTICE = -1;
+    const THROW_EXCEPTION = 0;
+    
+    /** @var int action when job is suspended *by server* */
+    private function $onSuspended = 0;
+    
     
     /**
      * @param string server address
@@ -57,6 +66,11 @@ class BeanstalkClient {
         $this->port = $port;
         $this->timeout = $timeout;
         $this->persistent = $persistent;
+    }
+    
+    
+    public function __destruct() {
+        $this->quit();
     }
     
     
@@ -87,12 +101,6 @@ class BeanstalkClient {
     public function setDefaultTimeToRun($timeToRun) {
         $this->defaultTimeToRun = abs((int)$timeToRun);
         return $this;
-    }
-    
-    
-    
-    public function __destruct() {
-        $this->quit();
     }
     
     
@@ -247,6 +255,34 @@ class BeanstalkClient {
     }
     
     
+    /**
+     * What to do if job is suspended by server.
+     * 
+     * @param int
+     */
+    public function setOnSuspended($action) {
+        $this->onSuspended = $action;
+    }
+    
+    
+    /**
+     * Handle case when a job is suspended *by server*.
+     * 
+     * @param int
+     */
+    private function suspended($jobId) {
+        switch ($this->onSuspended) {
+            case self::IGNORE;
+                break;
+            case self::NOTICE;
+                trigger_error("BeanstalkClient: Job $jobId was suspended by server. Check and restore the suspended jobs!");
+                break;
+            case self::THROW_EXCEPTION;
+                throw new BeanstalkException("BeanstalkClient: Job $jobId was suspended by server. Check and restore the suspended jobs!");
+        }
+    }
+    
+    
     // Producer Commands -----------------------------------------------------------------------------------------------
     
     
@@ -278,8 +314,10 @@ class BeanstalkClient {
         
         switch ($status) {
             case 'INSERTED':
-            case 'BURIED':
                 return (int)strtok(' '); // job id
+            case 'BURIED':
+                $this->suspended((int)strtok(' '));
+                break;
             case 'EXPECTED_CRLF':
             case 'JOB_TOO_BIG':
             default:
@@ -398,7 +436,7 @@ class BeanstalkClient {
             case 'RELEASED':
                 return $this;
             case 'BURIED':
-                /// notify?
+                $this->suspended($jobId);
                 return $this;
             case 'NOT_FOUND':
             default:
