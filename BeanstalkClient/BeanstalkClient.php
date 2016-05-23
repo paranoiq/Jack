@@ -1,795 +1,744 @@
 <?php
 
-namespace Jack;
-
-
-/**
- * BeanstalkCLient Exception
- */
-class BeanstalkException extends \RuntimeException {};
+namespace Dogma\Queue;
 
 
 /**
  * An interface to Beanstalk queue service. Implements Beanstalk protocol spec 1.2
  * @link https://github.com/kr/beanstalkd/blob/master/doc/protocol.txt
- * 
+ *
  * Based on Socket_Beanstalk class by David Persson [nperson@gmx.de]
  * @link https://github.com/davidpersson/beanstalk/
- * 
+ *
  * @author Vlasta Neubauer [paranoi@centrum.cz]
  */
-class BeanstalkClient {
-    
+class BeanstalkClient extends \Dogma\Object
+{
+
     // job priority
     const TOP_PRIORITY = 0;
     const URGENT_PRIORITY = 512;
     const HIGH_PRIORITY = 1024; // everything under 1024 is urgent (see "current-jobs-urgent" in stats)
     const MEDIUM_PRIORITY = 2048;
     const LOW_PRIORITY = 4096;
-    
-    
+
+
     /** @var string */
     private $host;
-    
+
     /** @var int */
     private $port;
-    
+
     /** @var int */
     private $timeout;
-    
+
     /** @var bool */
     private $persistent;
-    
+
     /** @var resource */
     private $connection;
-    
-    
+
+
     protected $defaultPriority = 2048;
     protected $defaultTimeToRun = 60;
     protected $defaultDelay = 0;
-    
-    
+
+
     // suspended job handling
     const IGNORE = -2;
     const NOTICE = -1;
     const THROW_EXCEPTION = 0;
-    
+
     /** @var int */
     private $onSuspended = 0;
-    
+
     /** @var callback */
     private $onDeadline;
-    
-    
-    /**
-     * @param string server address
-     * @param int server port
-     * @param int connection timeout in seconds
-     * @param bool persistent connection
-     */
-    public function __construct($host = '127.0.0.1', $port = 11300, $timeout = 1, $persistent = TRUE) {
+
+    public function __construct(string $host = '127.0.0.1', int $port = 11300, int $timeout = 1, bool $persistent = true)
+    {
         $this->host = $host;
         $this->port = $port;
         $this->timeout = $timeout;
         $this->persistent = $persistent;
     }
-    
-    
-    public function __destruct() {
+
+    public function __destruct()
+    {
         $this->quit();
     }
-    
-    
-    /**
-     * @param int
-     * @return self
-     */
-    public function setDefaultPriority($priority) {
-        $this->defaultPriority = abs((int)$priority);
-        return $this;
+
+    public function setDefaultPriority(int $priority)
+    {
+        $this->defaultPriority = abs((int) $priority);
     }
-    
-    
-    /**
-     * @param int [seconds]
-     * @return self
-     */
-    public function setDefaultDelay($delay) {
-        $this->defaultDelay = abs((int)$delay);
-        return $this;
+
+    public function setDefaultDelay(int $delay)
+    {
+        $this->defaultDelay = abs((int) $delay);
     }
-    
-    
-    /**
-     * @param int [seconds]
-     * @return self
-     */
-    public function setDefaultTimeToRun($timeToRun) {
-        $this->defaultTimeToRun = abs((int)$timeToRun);
-        return $this;
+
+    public function setDefaultTimeToRun(int $timeToRun)
+    {
+        $this->defaultTimeToRun = abs((int) $timeToRun);
     }
-    
-    
+
     /**
      * Initiate a socket connection to Beanstalk server.
      */
-    private function connect() {
+    private function connect()
+    {
         if (isset($this->connection)) {
             $this->disconnect();
         }
-        
+
         $function = $this->persistent ? 'pfsockopen' : 'fsockopen';
-        $params = array($this->host, $this->port, &$errNum, &$errStr);
-        
+        $errNum = $errStr = '';
+        $params = [$this->host, $this->port, &$errNum, &$errStr];
+
         if ($this->timeout) {
             $params[] = $this->timeout;
         }
         $this->connection = @call_user_func_array($function, $params);
-        
+
         if (!empty($errNum) || !empty($errStr)) {
-            $this->connection = NULL;
-            throw new BeanstalkException("Socket: $errStr", $errNum);
+            $this->connection = null;
+            throw new BeanstalkException(sprintf('Socket: %s', $errStr), $errNum);
         }
-        
+
         if (!is_resource($this->connection)) {
-            $this->connection = NULL;
-            throw new BeanstalkException("Cannot create connection to Beanstalk server.");
+            $this->connection = null;
+            throw new BeanstalkException('Cannot create connection to Beanstalk server.');
         }
-        
+
         // no timeout (blocking reads)
         stream_set_timeout($this->connection, -1);
     }
-    
-    
+
     /**
      * Close connection to Beanstalk server.
      */
-    private function disconnect() {
+    private function disconnect()
+    {
         if (is_resource($this->connection)) {
-            !fclose($this->connection);
+            fclose($this->connection);
         }
-        
-        $this->connection = NULL;
+
+        $this->connection = null;
     }
-    
-    
+
     /**
      * Send a message to server.
-     * 
-     * @param string
      */
-    private function send($data) {
+    private function send(string $data)
+    {
         if (!$this->connection) {
             $this->connect();
         }
-        echo ">> $data\n";
         $res = fwrite($this->connection, $data . "\r\n", strlen($data) + 2);
-        
-        if ($res === FALSE) {
-            throw new BeanstalkException("Cannot send message to Beanstalk server.");
+
+        if ($res === false) {
+            throw new BeanstalkException('Cannot send message to Beanstalk server.');
         }
     }
-    
-    
+
     /**
      * Read a message from server.
-     * 
-     * @param int bytes
-     * @return string
      */
-    private function receive($length = NULL) {
+    private function receive(int $length = null): string
+    {
         if ($length) {
             if (feof($this->connection)) {
-                throw new BeanstalkException("No reply from Beanstalk server.");
+                throw new BeanstalkException('No reply from Beanstalk server.');
             }
             $data = fread($this->connection, $length + 2);
             $meta = stream_get_meta_data($this->connection);
 
             if ($meta['timed_out']) {
-                throw new BeanstalkException("Connection to Beanstalk server timed out.");
+                throw new BeanstalkException('Connection to Beanstalk server timed out.');
             }
             $data = rtrim($data, "\r\n");
-            echo "   $data\n";
-            
+
         } else {
             $data = stream_get_line($this->connection, 16384, "\r\n");
-            if ($data === FALSE) {
-                throw new BeanstalkException("No reply from Beanstalk server.");
+            if ($data === false) {
+                throw new BeanstalkException('No reply from Beanstalk server.');
             }
-            echo "   $data\n";
         }
-        
+
         return $data;
     }
-    
-    
+
     /**
      * Send [QUIT] command and disconnect.
      */
-    public function quit() {
+    public function quit()
+    {
         try {
-            if ($this->connection) $this->send('quit');
+            if ($this->connection) {
+                $this->send('quit');
+            }
         } catch (BeanstalkException $e) {
             // pass
         }
         $this->disconnect();
     }
-    
-    
+
     /**
      * Format delay argument to seconds.
-     * 
-     * @param numeric|DateTime
+     *
+     * @param int|float|string|\DateTime
      * @return int
      */
-    private function delayToSeconds($delay) {
-        /// accept string representation of date
+    private function delayToSeconds($delay): int
+    {
         if (is_numeric($delay)) {
-            return abs((int)$delay);
-        } elseif ($delay instanceof \DateTime) {
-            return min(0, $delay->getTimestamp() - time());
+            if ((int) $delay < 0) {
+                trigger_error(sprintf('BeanstalkClient: Job delay should not be negative. %d given.', $delay), E_USER_WARNING);
+            }
+
+            return abs((int) $delay);
+
+        } elseif (is_string($delay) || $delay instanceof \DateTime) {
+            if (is_string($delay)) {
+                $delay = new \DateTime($delay);
+            }
+            $seconds = $delay->getTimestamp() - time();
+            if ($seconds < 0) {
+                trigger_error(sprintf('BeanstalkClient: Job delay should not be negative. %d given.', $seconds), E_USER_WARNING);
+            }
+
+            return abs($seconds);
+
         } else {
-            throw new \InvalidArgumentException("Unsupported delay parameter given.");
+            throw new \InvalidArgumentException('Unsupported delay parameter given.');
         }
     }
-    
-    
+
     /**
      * Try to serialize job data.
      * Throws exception for unsupported types (null, bool, resource)
-     * 
+     *
      * @param array|object|int|float
      * @return string
      */
-    private function serializeJob($data) {
+    private function serializeJob($data): string
+    {
         if (is_object($data) || is_array($data) || is_int($data) || is_float($data)) {
             return serialize($data);
         } else {
-            throw new \InvalidArgumentException("Unsupported job data type.");
+            throw new \InvalidArgumentException('Unsupported job data type.');
         }
     }
-    
-    
+
     /**
      * Try to unserialize job data.
-     * 
+     *
      * @param string
      * @return string|array|object
      */
-    private function unserializeJob($data) {
+    private function unserializeJob(string $data)
+    {
         $job = @unserialize($data);
-        
-        if ($job === FALSE) {
+
+        if ($job === false) {
             return $data;
         } else {
             return $job;
         }
     }
-    
-    
+
     /**
      * Set callback to call when a "DEADLINE SOON" signal received.
-     * 
-     * @param callback
-     * @return self
      */
-    public function setOnDeadline($callback) {
-        if (!is_callable($callback))
-            throw new \InvalidArgumentException("Invalid callback onDeadline given.");
-        
+    public function setOnDeadline(callable $callback)
+    {
         $this->onDeadline = $callback;
-        return $this;
     }
-    
-    
+
     /**
      * What to do if job is suspended by server.
-     * 
-     * @param int
-     * @return self
      */
-    public function setOnSuspended($action) {
+    public function setOnSuspended(int $action)
+    {
         $this->onSuspended = $action;
-        return $this;
     }
-    
-    
+
     /**
      * Handle case when a job is suspended *by server*.
-     * 
-     * @param int
      */
-    private function suspended($jobId) {
+    private function suspended(int $jobId)
+    {
         switch ($this->onSuspended) {
-            case self::IGNORE;
+            case self::IGNORE:
                 break;
-            case self::NOTICE;
-                trigger_error("BeanstalkClient: Job $jobId was suspended by server. Check and restore the suspended jobs!");
+            case self::NOTICE:
+                trigger_error(sprintf('BeanstalkClient: Job %s was suspended by server. Check and restore the suspended jobs!', $jobId));
                 break;
-            case self::THROW_EXCEPTION;
+            case self::THROW_EXCEPTION:
             default:
-                throw new BeanstalkException("BeanstalkClient: Job $jobId was suspended by server. Check and restore the suspended jobs!");
+                throw new BeanstalkException(sprintf('BeanstalkClient: Job %s was suspended by server. Check and restore the suspended jobs!', $jobId));
         }
     }
-    
-    
+
     // Producer Commands -----------------------------------------------------------------------------------------------
-    
-    
+
     /**
      * Insert a job into the queue. [PUT]
      * All other types except string will be serialized.
-     * 
-     * @param string job data
-     * @param int|DateTime seconds of delay or time to start
-     * @param int priority [0-2^32]. lower number means higher priority
-     * @param int worker timeout, before re-assigning job to another worker
+     *
+     * @param string $data job data
+     * @param int|\DateTime $delay seconds of delay or time to start
+     * @param int $priority [0-2^32]. lower number means higher priority
+     * @param int $timeToRun worker timeout, before re-assigning job to another worker
      * @return int job id
      */
-    public function queue($data, $delay = NULL, $priority = NULL, $timeToRun = NULL) {
-        if (!isset($priority)) $priority = $this->defaultPriority;
-        if (!isset($timeToRun)) $timeToRun = $this->defaultTimeToRun;
-        if (!isset($delay)) $delay = $this->defaultDelay;
-        
-        $priority  = abs((int)$priority);
-        $timeToRun = abs((int)$timeToRun);
-        if (!is_int($delay)) $delay = $this->delayToSeconds($delay);
-        
-        if (!is_string($data)) $data = $this->serializeJob($data);
-        
+    public function queue(string $data, $delay = null, int $priority = null, int $timeToRun = null): int
+    {
+        if (!isset($priority)) {
+            $priority = $this->defaultPriority;
+        }
+        if (!isset($timeToRun)) {
+            $timeToRun = $this->defaultTimeToRun;
+        }
+        if (!isset($delay)) {
+            $delay = $this->defaultDelay;
+        }
+
+        $priority  = abs((int) $priority);
+        $timeToRun = abs((int) $timeToRun);
+        if (!is_int($delay)) {
+            $delay = $this->delayToSeconds($delay);
+        }
+
+        if (!is_string($data)) {
+            $data = $this->serializeJob($data);
+        }
+
         $this->send(sprintf('put %d %d %d %d', $priority, $delay, $timeToRun, strlen($data)));
         $this->send($data);
-        
+
         $status = strtok($this->receive(), ' ');
-        
+
         switch ($status) {
             case 'INSERTED':
-                return (int)strtok(' '); // job id
+                return (int) strtok(' '); // job id
             case 'BURIED':
-                $this->suspended((int)strtok(' '));
-                break;
+                $this->suspended((int) strtok(' '));
+                return -1;
             case 'EXPECTED_CRLF':
             case 'JOB_TOO_BIG':
             default:
-                throw new BeanstalkException("Error when queueing a job: " . $status);
+                throw new BeanstalkException(sprintf('Error when queueing a job: %s', $status));
         }
     }
-    
-    
+
     /**
      * Select queue for inserting jobs. Default queue is "default". [USE]
      * Automatically creates queues.
-     * 
-     * @param string queue name (max 200 bytes)
-     * @return self
      */
-    public function selectQueue($queue) {
+    public function selectQueue(string $queue)
+    {
         $this->send(sprintf('use %s', $queue));
         $status = strtok($this->receive(), ' ');
-        
+
         switch ($status) {
             case 'USING':
                 break;
             default:
-                throw new BeanstalkException("Error when selecting a queue: " . $status);
+                throw new BeanstalkException(sprintf('Error when selecting a queue: %s', $status));
         }
-        
-        return $this;
     }
-    
-    
+
     // Worker Commands -------------------------------------------------------------------------------------------------
-    
-    
+
     /**
      * Ask for a job to assign. Job is reserved until finished, released or timed-out. [RESERVE]
      * When no timeout is given, waits until some job is ready.
-     * 
-     * @param int seconds to wait if queue is empty. 0 returns immediately.
-     * @return array(int $jobId, string $data)
      */
-    public function assign($timeout = NULL) {
+    public function assign(int $timeout = null): BeanstalkJob
+    {
         if (isset($timeout)) {
             $this->send(sprintf('reserve-with-timeout %d', $timeout));
         } else {
             $this->send('reserve');
         }
         $status = strtok($this->receive(), ' ');
-        
+
         switch ($status) {
             case 'RESERVED':
-                return array(
-                    'id' => (int)strtok(' '),
-                    'body' => $this->unserializeJob($this->receive((int)strtok(' ')))
-                );
+                $id = (int) strtok(' ');
+                $body = $this->unserializeJob($this->receive((int) strtok(' ')));
+                break;
             case 'DEADLINE_SOON':
-                if ($this->onDeadline) $this->onDeadline();
-                return array();
+                /// if ($this->onDeadline) $this->onDeadline();
+                return [];
             case 'TIMED_OUT':
-                return array();
+                return [];
             default:
-                throw new BeanstalkException("Error when claiming a job: " . $status);
+                throw new BeanstalkException(sprintf('Error when claiming a job: %s', $status));
         }
+
+        return new BeanstalkJob($id, $body, true, $this);
     }
-    
-    
+
     /**
      * Finishes job and removes it from the queue. [DELETE]
-     * 
-     * @param int
-     * @return self
      */
-    public function finish($jobId) {
+    public function finish(int $jobId)
+    {
         $this->send(sprintf('delete %d', $jobId));
         $status = $this->receive();
-        
+
         switch ($status) {
             case 'DELETED':
-                return $this;
+                return;
             case 'NOT_FOUND':
             default:
-                throw new BeanstalkException("Error when finishing a job: " . $status);
+                throw new BeanstalkException(sprintf('Error when finishing a job: %s', $status));
         }
     }
-    
-    
+
     /**
      * Alias for finish().
-     * 
-     * @param int
-     * @return self
      */
-    public function delete($jobId) {
-        return $this->finish($jobId);
+    public function delete(int $jobId)
+    {
+        $this->finish($jobId);
     }
-    
-    
+
     /**
      * Puts a reserved job back into the ready queue. [RELEASE]
-     * 
+     *
      * @param int
-     * @param int|DateTime
+     * @param int|\DateTime
      * @param int
-     * @return self
      */
-    public function release($jobId, $delay = NULL, $priority = NULL) {
-        if (!isset($priority)) $priority = $this->defaultPriority;
-        if (!isset($delay)) $delay = $this->defaultDelay;
-        
-        $priority = abs((int)$priority);
-        if (!is_int($delay)) $delay = $this->delayToSeconds($delay);
-        
+    public function release(int $jobId, $delay = null, int $priority = null)
+    {
+        if (!isset($priority)) {
+            $priority = $this->defaultPriority;
+        }
+        if (!isset($delay)) {
+            $delay = $this->defaultDelay;
+        }
+
+        $priority = abs((int) $priority);
+        if (!is_int($delay)) {
+            $delay = $this->delayToSeconds($delay);
+        }
+
         $this->send(sprintf('release %d %d %d', $jobId, $priority, $delay));
         $status = $this->receive();
-        
+
         switch ($status) {
             case 'RELEASED':
-                return $this;
+                return;
             case 'BURIED':
                 $this->suspended($jobId);
-                return $this;
+                return;
             case 'NOT_FOUND':
             default:
-                throw new BeanstalkException("Error when releasing a job: " . $status);
+                throw new BeanstalkException(sprintf('Error when releasing a job: %s', $status));
         }
     }
-    
-    
+
     /**
      * Suspend a job. Job cannot be assigned to a worker until it is restored. [BURY]
-     * 
-     * @param int
-     * @param int
-     * @return self
      */
-    public function suspend($jobId, $priority = NULL) {
-        if (!isset($priority)) $priority = $this->defaultPriority;
-        
-        $priority = abs((int)$priority);
-        
+    public function suspend(int $jobId, int $priority = null)
+    {
+        if (!isset($priority)) {
+            $priority = $this->defaultPriority;
+        }
+
+        $priority = abs((int) $priority);
+
         $this->send(sprintf('bury %d %d', $jobId, $priority));
         $status = $this->receive();
-        
+
         switch ($status) {
             case 'BURIED':
-                return $this;
+                return;
             case 'NOT_FOUND':
             default:
-                throw new BeanstalkException("Error when suspending a job: " . $status);
+                throw new BeanstalkException(sprintf('Error when suspending a job: %s', $status));
         }
     }
-    
-    
+
     /**
      * Restore a previously suspended job. It can be assigned to a worker now. [KICK*]
-     * 
-     * @param int max number of jobs to restore
-     * @return int number of jobs actualy restored
      */
-    public function restore($jobs) {
+    public function restore(int $jobs): int
+    {
         /// check for suspended (do not kick delayed jobs!)
-        
+
         $this->send(sprintf('kick %d', $jobs));
         $status = strtok($this->receive(), ' ');
-        
+
         switch ($status) {
             case 'KICKED':
-                return (int)strtok(' ');
+                return (int) strtok(' ');
             default:
-                throw new BeanstalkException("Error when restoring jobs: " . $status);
+                throw new BeanstalkException(sprintf('Error when restoring jobs: %s', $status));
         }
     }
-    
-    
+
     /**
      * Reset the "time to run" of the job. [TOUCH]
-     * 
-     * @param int
-     * @return self
      */
-    public function touch($jobId) {
+    public function touch(int $jobId)
+    {
         $this->send(sprintf('touch %d', $jobId));
         $status = $this->receive();
-        
+
         switch ($status) {
             case 'TOUCHED':
-                return $this;
+                return;
             case 'NOT_TOUCHED':
             default:
-                throw new BeanstalkException("Error when touching a job: " . $status);
+                throw new BeanstalkException(sprintf('Error when touching a job: %s', $status));
         }
     }
-    
-    
+
     /**
      * Watch queue. Jobs are claimed only from wathed queues. [WATCH]
-     * 
-     * @param string
-     * @return self
      */
-    public function watchQueue($queue) {
+    public function watchQueue(string $queue)
+    {
         $this->send(sprintf('watch %s', $queue));
         $status = strtok($this->receive(), ' ');
-        
+
         switch ($status) {
             case 'WATCHING':
-                return $this;
+                return;
             default:
-                throw new BeanstalkException("Error when watching a queue: " . $status);
+                throw new BeanstalkException(sprintf('Error when watching a queue: %s', $status));
         }
     }
-    
-    
+
     /**
      * Ignore queue. Jobs are claimed only from wathed queues. [WATCH]
-     * 
-     * @param string
-     * @return self
      */
-    public function ignoreQueue($queue) {
+    public function ignoreQueue(string $queue)
+    {
         $this->send(sprintf('ignore %s', $queue));
         $status = strtok($this->receive(), ' ');
-        
+
         switch ($status) {
             case 'WATCHING':
-                return $this;
+                return;
             case 'NOT_IGNORED':
             default:
-                throw new BeanstalkException("Error when ignoring a queue: " . $status);
+                throw new BeanstalkException(sprintf('Error when ignoring a queue: %s', $status));
         }
     }
-    
-    
+
     /**
      * Pause queue. No jobs from this queue will be assigned until the given time. [PAUSE-TUBE]
-     * 
+     *
      * @param string
-     * @param int|DateTime seconds of delay or time to start
-     * @return self
+     * @param int|\DateTime seconds of delay or time to start
      */
-    public function pauseQueue($queue, $delay) {
-        if (!is_int($delay)) $delay = $this->delayToSeconds($delay);
-        
+    public function pauseQueue(string $queue, $delay)
+    {
+        if (!is_int($delay)) {
+            $delay = $this->delayToSeconds($delay);
+        }
+
         $this->send(sprintf('pause-tube %s %d', $queue, $delay));
         $status = strtok($this->receive(), ' ');
-        
+
         switch ($status) {
             case 'WATCHING':
-                return $this;
+                return;
             case 'NOT_IGNORED':
             default:
-                throw new BeanstalkException("Error when ignoring a queue: " . $status);
+                throw new BeanstalkException(sprintf('Error when ignoring a queue: %s', $status));
         }
     }
-    
-    
+
     // Show Commands --------------------------------------------------------------------------------------------------
-    
-    
+
     /**
      * Show a job. [PEEK]
-     * 
+     *
      * @param int
-     * @param bool with statistics
-     * @return array(int $id, mixed $body, [array $stats])|NULL
+     * @param bool $stats with statistics
+     * @return \Dogma\Queue\BeanstalkJob|null
      */
-    public function showJob($jobId, $stats = FALSE) {
+    public function showJob(int $jobId, bool $stats = false)
+    {
         $this->send(sprintf('peek %d', $jobId));
         return $this->readJob($stats);
     }
-    
-    
+
     /**
      * Show the next ready job. [PEEK-READY]
-     * 
-     * @param bool with statistics
-     * @return array(int $id, mixed $body, [array $stats])
+     *
+     * @param bool $stats with statistics
+     * @return \Dogma\Queue\BeanstalkJob|null
      */
-    public function showNextReadyJob($stats = FALSE) {
+    public function showNextReadyJob(bool $stats = false)
+    {
         $this->send('peek-ready');
         return $this->readJob($stats);
     }
-    
-    
+
     /**
      * Show the job with the shortest delay left. [PEEK-DELAYED]
-     * 
-     * @param bool with statistics
-     * @return array(int $id, mixed $body, [array $stats])
+     *
+     * @param bool $stats with statistics
+     * @return \Dogma\Queue\BeanstalkJob|null
      */
-    public function showNextDelayedJob($stats = FALSE) {
+    public function showNextDelayedJob(bool $stats = false)
+    {
         $this->send('peek-delayed');
         return $this->readJob($stats);
     }
-    
-    
+
     /**
      * Inspect the next job in the list of buried jobs. [PEEK-BURIED]
-     * 
-     * @param bool with statistics
-     * @return array(int $id, mixed $body, [array $stats])
+     *
+     * @param bool $stats with statistics
+     * @return \Dogma\Queue\BeanstalkJob|null
      */
-    public function showNextSuspendedJob($stats = FALSE) {
+    public function showNextSuspendedJob(bool $stats = false)
+    {
         $this->send('peek-buried');
         return $this->readJob($stats);
     }
-    
-    
+
     /**
      * Handles response for all show methods.
-     * 
-     * @param bool with statistics
-     * @return array(int $id, mixed $body, [array $stats])
+     *
+     * @param bool $stats with statistics
+     * @return \Dogma\Queue\BeanstalkJob|null
      */
-    private function readJob($stats) {
+    private function readJob(bool $stats)
+    {
         $status = strtok($this->receive(), ' ');
-        
+
         switch ($status) {
             case 'FOUND':
-                $job = array(
-                    'id' => (int)strtok(' '),
-                    'body' => $this->unserializeJob($this->receive((int)strtok(' ')))
-                );
+                $id = (int) strtok(' ');
+                $data = $this->unserializeJob($this->receive((int) strtok(' ')));
+                break;
             case 'NOT_FOUND':
-                return NULL;
+                return null;
             default:
-                throw new BeanstalkException("Error when reading a job: " . $status);
+                throw new BeanstalkException(sprintf('Error when reading a job: %s', $status));
         }
-        
+
         if ($stats) {
-            $job['stats'] = getJobStats($job['id']);
+            $st = $this->getJobStats($id);
+        } else {
+            $st = [];
         }
-        
-        return $job;
+
+        return new BeanstalkJob($id, $data, false, $this, $st);
     }
-    
-    
+
     // Stats Commands --------------------------------------------------------------------------------------------------
-    
-    
+
     /**
      * Get statistical information about a job. [STATS-JOB]
-     * 
+     *
      * @param int
-     * @return array
+     * @return mixed[]
      */
-    public function getJobStats($jobId) {
+    public function getJobStats(int $jobId): array
+    {
         $this->send(sprintf('stats-job %d', $jobId));
         return $this->readStats();
     }
-    
-    
+
     /**
      * Get statistical information about a queue. [STATS-TUBE]
-     * 
-     * @param string queue name
-     * @return array
+     *
+     * @param string $queue name
+     * @return mixed[]
      */
-    public function getQueueStats($queue) {
+    public function getQueueStats(string $queue): array
+    {
         $this->send(sprintf('stats-tube %s', $queue));
         return $this->readStats();
     }
-    
-    
+
     /**
      * Get statistical information about the server. [STATS]
-     * 
-     * @return array
+     *
+     * @return mixed[]
      */
-    public function getServerStats() {
+    public function getServerStats(): array
+    {
         $this->send('stats');
         return $this->readStats();
     }
-    
-    
+
     /**
      * Get a list of all server queues. [LIST-TUBES]
-     * 
-     * @return array
+     *
+     * @return string[]
      */
-    public function getQueues() {
+    public function getQueues(): array
+    {
         $this->send('list-tubes');
         return $this->readStats();
     }
-    
-    
+
     /**
      * Get selected queue. [LIST-TUBE-USED]
-     * 
-     * @return string
      */
-    public function getSelectedQueue() {
+    public function getSelectedQueue(): string
+    {
         $this->send('list-tube-used');
         return $this->readStats();
     }
-    
-    
+
     /**
      * Get list of fatched queues. [LIST-TUBES-WATCHED]
-     * 
-     * @return array.
+     *
+     * @return string[]
      */
-    public function getWatchedQueues() {
+    public function getWatchedQueues(): array
+    {
         $this->send('list-tubes-watched');
         return $this->readStats();
     }
-    
-    
+
     /**
      * Handles responses for all stat methods.
-     * 
-     * @param bool single result
-     * @return array|string
+     *
+     * @return mixed[]
      */
-    private function readStats() {
+    private function readStats(): array
+    {
         $status = strtok($this->receive(), ' ');
-        
+
         switch ($status) {
             case 'OK':
-                $response = $this->receive((int)strtok(' '));
+                $response = $this->receive((int) strtok(' '));
                 return $this->decodeYaml($response);
             default:
-                throw new BeanstalkException("Error when reading stats: " . $status);
+                throw new BeanstalkException(sprintf('Error when reading stats: %s', $status));
         }
     }
-    
-    
+
     /**
      * Decodes YAML data. This is a super naive decoder which just works on a
      * subset of YAML which is commonly returned by beanstalk.
-     * 
-     * @param string Yaml list or dictionary
-     * @return array
      */
-    private function decodeYaml($data) {
+    private function decodeYaml(string $data): array
+    {
         $data = array_slice(explode("\n", $data), 1);
-        $result = array();
-        
+        $result = [];
+
         foreach ($data as $key => $value) {
             if ($value[0] === '-') {
                 $value = ltrim($value, '- ');
-                
-            } elseif (strpos($value, ':') !== FALSE) {
+
+            } elseif (strpos($value, ':') !== false) {
                 list($key, $value) = explode(':', $value);
                 $value = ltrim($value, ' ');
             }
@@ -800,6 +749,5 @@ class BeanstalkClient {
         }
         return $result;
     }
-    
-}
 
+}
