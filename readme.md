@@ -16,19 +16,19 @@ if you want to use it in PHP 5.2, just delete the namespace
 
 Usage:
 ----------
-there are two types of client working with a queue. those who insert jobs in queue - *producers*, and those who take jobs from it - *workers*. both of them use the same client class
+there are two types of clients working with a queue. those who insert jobs in queue - *producers*, and those who take jobs from it - *workers*. both of them use the same client class
 
-just instantiate the *Jack\BeanstalkClient* class. if Beanstalk runs on localhost and standard port, there is no need to setup. client will connect automatically when first needed. default settings are: 
+for a quick start, just instantiate *Jack\BeanstalkClient*. if Beanstalk runs on localhost and standard port, there is no need to setup. client will connect automatically when needed. default settings are: 
 
     host: 127.0.0.1
     port: 11300
     timeout: 1 [s]
     persistent: TRUE
 
-you can specify connection details in constructor
+you can change this settings in constructor
 
 
-*producer* can open connection and insert a job in 'default' queue this way: 
+*producer* can open connection and insert a job in "default" queue this way: 
 
     $client = new Jack\BeanstalkClient;
     $client->queue("some job data");
@@ -38,12 +38,12 @@ you can specify connection details in constructor
     $client = new Jack\BeanstalkClient;
     $job = $client->assign();
     
-    // do something with $job['data']
+    // do something with $job['body']
     
     $client->finish($job['id']);
 
 
-on errors the client throws *Jack\BeanstalkException*
+on errors the client throws *Jack\BeanstalkException* or *\InvalidArgumentException*
 
 
 Job lifecycle
@@ -80,28 +80,40 @@ lifecycle with more possibilities:
                          |  delete
                           `--------> *poof*
 
-Jacks terminology differs from the official protocol in some things. see protocol documentation for more info: https://github.com/kr/beanstalkd/blob/master/doc/protocol.txt
+Jacks terminology differs from the official protocol in some cases. see protocol documentation for more info: https://github.com/kr/beanstalkd/blob/master/doc/protocol.txt
 
 
 API:
 ----------
 
+### settings:
+`void __construct([$host], [$port], [$timeout], [$persistent])`
+
+`self setDefaultPriority($priority)` - default priority for inserted jobs (default is 1024)
+
+`self setDefaultDelay($delay)` - default delay for inserted jobs in seconds (default is 0)
+
+`self setDefaultTimeToRun($timeToRun)` - default time to run for inserted jobs in seconds (default is 60)
+
+`void quit()` - close connection
+
+
 ### producer basics:
 `self selectQueue(string $queue)` - selects queue in which jobs will be inserted
 
-`self queue(string $data, [int $priority], [int $timeToRun], [int $delay])` - insert a job in the queue
+`self queue(string $data, [int $delay], [int $priority], [int $timeToRun])` - insert a job in the queue
 
 
 ### worker basics:
 `self watchQueue(string $queue)` - select queue for requesting jobs. more queues can be watched at a time, but at least one
 
-`self ignoreQueue(string $queue)` - remove the queue from watched
+`self ignoreQueue(string $queue)` - remove the queue from watched ones
 
-`array assign([int $timeout])` - assign a job from the queue (without timeout will wait if no job is ready). returns `array(int $job, string $data)`
+`array assign([int $timeout])` - assign a job from the queue. returns `array(int $job, string $data)`
 
 `self finish(int $jobId)` - finish a job. job will be deleted from the queue
 
-`self delete(int $jobId)` - alias for finish
+`self delete(int $jobId)` - alias for *finish*
 
 `self touch($jobId)` - will prevent a job from runing out of time. touch will reset the timeToRun clock, so the worker has more time before job is returned back to queue
 
@@ -115,6 +127,12 @@ API:
 
 
 ### investigation:
+`string getSelectedQueue()` - get name of queue currently selected for inserting jobs
+
+`array getWatchedQueues()` - get list of watched queues
+
+`array getQueues()` - get a list of all queues on server
+
 `array showJob(int $jobId, [bool $stats])` - show a job by its id. returns `array(int $job, string $data, [array $stats])`
 
 `array showNextReadyJob([bool $stats])` - show next ready job. returns as above…
@@ -129,23 +147,8 @@ API:
 
 `array getServerStats()` - get statistical information about the server
 
-`array getQueues()` - get a list of all server queues
+for information on *statistics* see the Beanstalk protocol documentation: https://github.com/kr/beanstalkd/blob/master/doc/protocol.txt
 
-`string getSelectedQueue()` - get name of queue currently selected for inserting jobs
-
-`array getWatchedQueues()` - get list of watched queues
-
-
-### settings:
-`void __construct([$host], [$port], [$timeout], [$persistent])`
-
-`self setDefaultPriority($priority)` - default priority for inserted jobs (default is 1024)
-
-`self setDefaultDelay($delay)` - default delay for inserted jobs in seconds (default is 0)
-
-`self setDefaultTimeToRun($timeToRun)` - default time to run for inserted jobs in seconds (default is 60)
-
-`void quit()` - close connection
 
 ### notes:
 *$data* can be also other type than string. other types will be automatically serialized on inserting and deserialized on reading
@@ -154,9 +157,7 @@ API:
 
 *$priority* is an integer between 0 and 2^32. the lower the priority is the sooner the job will be assigned. priority under 1024 means "urgent"
 
-*$timeToRun* represents maximal time a job can be assigned. after this time the worker is considered to be stuck and job is returned to queue. this can be prevented by "touching" the job
-
-for information on *statistics* show the Beanstalk protocol documentation: https://github.com/kr/beanstalkd/blob/master/doc/protocol.txt
+*$timeToRun* represents maximal time a job can be assigned. after this time the worker is considered to be stuck and job is returned to queue. worker can prevent this by "touching" the job periodically
 
 for more information read the Jack source codes
 

@@ -3,6 +3,9 @@
 namespace Jack;
 
 
+/**
+ * BeanstalkCLient Exception
+ */
 class BeanstalkException extends \RuntimeException {};
 
 
@@ -187,6 +190,7 @@ class BeanstalkClient {
             }
             $data = rtrim($data, "\r\n");
             echo "   $data\n";
+            
         } else {
             $data = stream_get_line($this->connection, 16384, "\r\n");
             if ($data === FALSE) {
@@ -219,6 +223,7 @@ class BeanstalkClient {
      * @return int
      */
     private function delayToSeconds($delay) {
+        /// accept string representation of date
         if (is_numeric($delay)) {
             return abs((int)$delay);
         } elseif ($delay instanceof \DateTime) {
@@ -316,12 +321,12 @@ class BeanstalkClient {
      * All other types except string will be serialized.
      * 
      * @param string job data
-     * @param int priority [0-2^32]. lower means higher
      * @param int|DateTime seconds of delay or time to start
+     * @param int priority [0-2^32]. lower number means higher priority
      * @param int worker timeout, before re-assigning job to another worker
      * @return int job id
      */
-    public function queue($data, $priority = NULL, $timeToRun = NULL, $delay = NULL) {
+    public function queue($data, $delay = NULL, $priority = NULL, $timeToRun = NULL) {
         if (!isset($priority)) $priority = $this->defaultPriority;
         if (!isset($timeToRun)) $timeToRun = $this->defaultTimeToRun;
         if (!isset($delay)) $delay = $this->defaultDelay;
@@ -443,13 +448,13 @@ class BeanstalkClient {
      * Puts a reserved job back into the ready queue. [RELEASE]
      * 
      * @param int
-     * @param int
+     * @param int|DateTime
      * @param int
      * @return self
      */
-    public function release($jobId, $priority = NULL, $delay = NULL) {
+    public function release($jobId, $delay = NULL, $priority = NULL) {
         if (!isset($priority)) $priority = $this->defaultPriority;
-        if (!isset($delay))    $delay = $this->defaultDelay;
+        if (!isset($delay)) $delay = $this->defaultDelay;
         
         $priority = abs((int)$priority);
         if (!is_int($delay)) $delay = $this->delayToSeconds($delay);
@@ -501,10 +506,10 @@ class BeanstalkClient {
      * @param int max number of jobs to restore
      * @return int number of jobs actualy restored
      */
-    public function restore($number) {
+    public function restore($jobs) {
         /// check for suspended (do not kick delayed jobs!)
         
-        $this->send(sprintf('kick %d', $bound));
+        $this->send(sprintf('kick %d', $jobs));
         $status = strtok($this->receive(), ' ');
         
         switch ($status) {
@@ -606,17 +611,11 @@ class BeanstalkClient {
      * 
      * @param int
      * @param bool with statistics
-     * @return array(int $id, mixed $body, [array $stats])
+     * @return array(int $id, mixed $body, [array $stats])|NULL
      */
     public function showJob($jobId, $stats = FALSE) {
         $this->send(sprintf('peek %d', $jobId));
-        $job = $this->readJob($stats);
-        
-        if ($job === NULL) {
-            throw new BeanstalkException("Job $jobId was not found.");
-        }
-        
-        return $job;
+        return $this->readJob($stats);
     }
     
     
@@ -707,7 +706,7 @@ class BeanstalkClient {
      * @return array
      */
     public function getQueueStats($queue) {
-        $this->send(sprintf('stats-tube %s', $tube));
+        $this->send(sprintf('stats-tube %s', $queue));
         return $this->readStats();
     }
     
@@ -768,8 +767,7 @@ class BeanstalkClient {
         switch ($status) {
             case 'OK':
                 $response = $this->receive((int)strtok(' '));
-                $data = $this->decodeYaml($response);
-                break;
+                return $this->decodeYaml($response);
             default:
                 throw new BeanstalkException("Error when reading stats: " . $status);
         }
@@ -790,6 +788,7 @@ class BeanstalkClient {
         foreach ($data as $key => $value) {
             if ($value[0] === '-') {
                 $value = ltrim($value, '- ');
+                
             } elseif (strpos($value, ':') !== FALSE) {
                 list($key, $value) = explode(':', $value);
                 $value = ltrim($value, ' ');
